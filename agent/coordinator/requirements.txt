@@ -1,0 +1,4 @@
+redis==5.0.1
+aiohttp==3.9.1
+tensorflow==2.15.0
+numpy==1.26.2
