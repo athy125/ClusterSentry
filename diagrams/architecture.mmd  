@@ -1,0 +1,111 @@
+flowchart TB
+    subgraph "Monitoring Plane"
+        Sentinel["Sentinel\n(Central Monitoring System)"]
+        Prometheus["Prometheus\nMetrics Collection"]
+        Grafana["Grafana\nVisualization Dashboard"]
+        AlertManager["Alert Manager\nNotification System"]
+    end
+    
+    subgraph "Control Plane"
+        RecoveryOrchestrator["Recovery Orchestrator\n(Coordination)"]
+        StateManager["Distributed State Manager\n(Redis)"]
+        ActionLibrary["Recovery Action Library"]
+    end
+    
+    subgraph "Data Plane"
+        subgraph "Compute Node 1"
+            Agent1["Health Monitoring Agent"]
+            Workload1["Compute Workloads"]
+        end
+        
+        subgraph "Compute Node 2"
+            Agent2["Health Monitoring Agent"]
+            Workload2["Compute Workloads"]
+        end
+        
+        subgraph "Compute Node 3"
+            Agent3["Health Monitoring Agent"]
+            Workload3["Compute Workloads"]
+        end
+        
+        subgraph "Compute Node N"
+            AgentN["Health Monitoring Agent"]
+            WorkloadN["Compute Workloads"]
+        end
+    end
+    
+    subgraph "Testing Framework"
+        FaultInjector["Fault Injector"]
+        RecoveryMonitor["Recovery Monitor"]
+        MetricsCollector["Metrics Collector"]
+        TestRunner["Test Runner"]
+        ReportGenerator["Report Generator"]
+    end
+    
+    subgraph "CI/CD Pipeline"
+        BuildTest["Build & Test"]
+        FaultTest["Fault Testing"]
+        DeployStaging["Deploy to Staging"]
+        ChaosTest["Chaos Testing"]
+        DeployProduction["Deploy to Production"]
+    end
+    
+    %% Monitoring Plane Connections
+    Agent1 -->|"Report Metrics\n(gRPC)"| Sentinel
+    Agent2 -->|"Report Metrics\n(gRPC)"| Sentinel
+    Agent3 -->|"Report Metrics\n(gRPC)"| Sentinel
+    AgentN -->|"Report Metrics\n(gRPC)"| Sentinel
+    Sentinel -->|"Store Metrics"| Prometheus
+    Prometheus --> Grafana
+    Sentinel -->|"Anomaly Alert"| AlertManager
+    
+    %% Control Plane Connections
+    Sentinel -->|"Detected Failure"| RecoveryOrchestrator
+    RecoveryOrchestrator <-->|"State Sync"| StateManager
+    RecoveryOrchestrator -->|"Load Actions"| ActionLibrary
+    
+    %% Recovery Execution
+    RecoveryOrchestrator -->|"Execute Recovery"| Agent1
+    RecoveryOrchestrator -->|"Execute Recovery"| Agent2
+    RecoveryOrchestrator -->|"Execute Recovery"| Agent3
+    RecoveryOrchestrator -->|"Execute Recovery"| AgentN
+    
+    %% Agent to Workload
+    Agent1 -->|"Monitor & Control"| Workload1
+    Agent2 -->|"Monitor & Control"| Workload2
+    Agent3 -->|"Monitor & Control"| Workload3
+    AgentN -->|"Monitor & Control"| WorkloadN
+    
+    %% Testing Connections
+    FaultInjector -->|"Inject Faults"| Agent1
+    FaultInjector -->|"Inject Faults"| Agent2
+    FaultInjector -->|"Inject Faults"| Agent3
+    FaultInjector -->|"Inject Faults"| AgentN
+    RecoveryMonitor -->|"Monitor Recovery"| RecoveryOrchestrator
+    MetricsCollector -->|"Collect Metrics"| Prometheus
+    TestRunner -->|"Control"| FaultInjector
+    TestRunner -->|"Control"| RecoveryMonitor
+    TestRunner -->|"Control"| MetricsCollector
+    TestRunner -->|"Generate"| ReportGenerator
+    
+    %% CI/CD Flow
+    BuildTest --> FaultTest
+    FaultTest --> DeployStaging
+    DeployStaging --> ChaosTest
+    ChaosTest --> DeployProduction
+    
+    %% Styling
+    classDef monitoring fill:#d0f0c0,stroke:#333,stroke-width:1px
+    classDef control fill:#c0e0f0,stroke:#333,stroke-width:1px
+    classDef node fill:#f9d6ff,stroke:#333,stroke-width:1px
+    classDef agent fill:#f0c0c0,stroke:#333,stroke-width:1px
+    classDef workload fill:#f0f0c0,stroke:#333,stroke-width:1px
+    classDef testing fill:#e0c0f0,stroke:#333,stroke-width:1px
+    classDef cicd fill:#c0f0f0,stroke:#333,stroke-width:1px
+    
+    class Sentinel,Prometheus,Grafana,AlertManager monitoring
+    class RecoveryOrchestrator,StateManager,ActionLibrary control
+    class Agent1,Agent2,Agent3,AgentN agent
+    class Workload1,Workload2,Workload3,WorkloadN workload
+    class FaultInjector,RecoveryMonitor,MetricsCollector,TestRunner,ReportGenerator testing
+    class BuildTest,FaultTest,DeployStaging,ChaosTest,DeployProduction cicd
