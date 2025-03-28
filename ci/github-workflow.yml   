@@ -1,0 +1,339 @@
+# CI/CD Pipeline for Fault-Tolerant HPC System
+# This file contains the GitHub Actions workflow configurations
+
+name: Fault-Tolerant System CI/CD
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main, develop ]
+  schedule:
+    # Run nightly tests on main branch
+    - cron: '0 2 * * *'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    name: Build and Test
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up C++ environment
+      uses: actions/setup-cpp@v1
+      with:
+        cmake-version: '3.22.x'
+        
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Build C++ components
+      run: |
+        mkdir -p build
+        cd build
+        cmake ..
+        make -j4
+        
+    - name: Run unit tests
+      run: |
+        cd build
+        ctest -V
+        
+    - name: Run Python linting
+      run: |
+        pip install flake8
+        flake8 . --count --select=E9,F63,F7,F82 --show-source --statistics
+        
+    - name: Run Python tests
+      run: |
+        pytest -xvs tests/
+        
+    - name: Set up Redis for integration tests
+      uses: supercharge/redis-github-action@1.4.0
+      with:
+        redis-version: 6
+        
+    - name: Run integration tests
+      run: |
+        python -m pytest -xvs integration_tests/
+
+  fault-testing:
+    name: Fault Injection Testing
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Set up test environment
+      run: |
+        # Set up test infrastructure (Docker containers for nodes)
+        ./scripts/setup_test_environment.sh
+        
+    - name: Deploy test system
+      run: |
+        # Deploy the fault-tolerant system to the test environment
+        ./scripts/deploy_test_system.sh
+        
+    - name: Run basic fault tests
+      run: |
+        python fault_testing.py --config tests/configs/basic_fault_tests.json --output fault_test_results
+        
+    - name: Run advanced fault tests
+      run: |
+        python fault_testing.py --config tests/configs/advanced_fault_tests.json --output fault_test_results
+        
+    - name: Run concurrent fault tests
+      run: |
+        python fault_testing.py --config tests/configs/concurrent_fault_tests.json --output fault_test_results
+        
+    - name: Archive test results
+      uses: actions/upload-artifact@v3
+      with:
+        name: fault-test-results
+        path: fault_test_results/
+        
+  performance-testing:
+    name: Performance Testing
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.ref == 'refs/heads/main'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Set up test environment
+      run: |
+        # Set up performance test environment
+        ./scripts/setup_perf_environment.sh
+        
+    - name: Run recovery time benchmarks
+      run: |
+        # Test recovery speed under different load conditions
+        python benchmarks/recovery_speed_benchmark.py --output perf_results
+        
+    - name: Run scalability tests
+      run: |
+        # Test system behavior with increasing number of nodes
+        python benchmarks/scalability_benchmark.py --output perf_results
+        
+    - name: Archive performance results
+      uses: actions/upload-artifact@v3
+      with:
+        name: performance-results
+        path: perf_results/
+        
+  build-images:
+    name: Build Container Images
+    needs: [build, fault-testing, performance-testing]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    permissions:
+      contents: read
+      packages: write
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Log in to container registry
+      uses: docker/login-action@v2
+      with:
+        registry: ${{ env.REGISTRY }}
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+        
+    - name: Extract metadata for Docker
+      id: meta
+      uses: docker/metadata-action@v4
+      with:
+        images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        
+    - name: Build sentinel image
+      uses: docker/build-push-action@v3
+      with:
+        context: .
+        file: ./docker/sentinel/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}-sentinel
+        labels: ${{ steps.meta.outputs.labels }}
+        
+    - name: Build recovery orchestrator image
+      uses: docker/build-push-action@v3
+      with:
+        context: .
+        file: ./docker/recovery/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}-recovery
+        labels: ${{ steps.meta.outputs.labels }}
+        
+    - name: Build agent image
+      uses: docker/build-push-action@v3
+      with:
+        context: .
+        file: ./docker/agent/Dockerfile
+        push: true
+        tags: ${{ steps.meta.outputs.tags }}-agent
+        labels: ${{ steps.meta.outputs.labels }}
+        
+  deploy-staging:
+    name: Deploy to Staging
+    needs: build-images
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: staging
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Kubernetes tools
+      uses: azure/setup-kubectl@v3
+      
+    - name: Set up Kubernetes context
+      uses: azure/k8s-set-context@v3
+      with:
+        kubeconfig: ${{ secrets.KUBE_CONFIG_STAGING }}
+        
+    - name: Deploy to staging
+      run: |
+        # Update Kubernetes manifests with the new image tags
+        ./scripts/update_k8s_manifests.sh
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/staging/
+        
+        # Wait for deployment to complete
+        kubectl rollout status deployment/sentinel -n fault-tolerant-system
+        kubectl rollout status deployment/recovery-orchestrator -n fault-tolerant-system
+        kubectl rollout status daemonset/agent -n fault-tolerant-system
+        
+    - name: Run post-deployment tests
+      run: |
+        # Run health check tests against the staging environment
+        python tests/post_deployment_tests.py --environment staging
+        
+  deploy-production:
+    name: Deploy to Production
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment:
+      name: production
+      
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Kubernetes tools
+      uses: azure/setup-kubectl@v3
+      
+    - name: Set up Kubernetes context
+      uses: azure/k8s-set-context@v3
+      with:
+        kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+        
+    - name: Deploy to production
+      run: |
+        # Update Kubernetes manifests with the new image tags
+        ./scripts/update_k8s_manifests.sh
+        
+        # Apply Kubernetes manifests
+        kubectl apply -f k8s/production/
+        
+        # Perform rolling update with canary deployment
+        ./scripts/canary_deployment.sh
+        
+        # Wait for deployment to complete
+        kubectl rollout status deployment/sentinel -n fault-tolerant-system
+        kubectl rollout status deployment/recovery-orchestrator -n fault-tolerant-system
+        kubectl rollout status daemonset/agent -n fault-tolerant-system
+        
+    - name: Run post-deployment tests
+      run: |
+        # Run health check tests against the production environment
+        python tests/post_deployment_tests.py --environment production
+        
+  scheduled-testing:
+    name: Scheduled Resilience Testing
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v3
+      
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+        cache: 'pip'
+        
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        
+    - name: Set up Kubernetes tools
+      uses: azure/setup-kubectl@v3
+      
+    - name: Set up Kubernetes context
+      uses: azure/k8s-set-context@v3
+      with:
+        kubeconfig: ${{ secrets.KUBE_CONFIG_PRODUCTION }}
+        
+    - name: Run chaos tests
+      run: |
+        # Perform chaos testing on the production environment
+        python chaos_testing.py --duration 30 --intensity medium
+        
+    - name: Generate resilience report
+      run: |
+        # Generate report on system resilience
+        python generate_resilience_report.py --output reports/
+        
+    - name: Archive resilience report
+      uses: actions/upload-artifact@v3
+      with:
+        name: resilience-report
+        path: reports/
