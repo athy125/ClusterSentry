@@ -1,0 +1,579 @@
+#!/usr/bin/env python3
+"""
+Fault Injection and Recovery Testing Framework for HPC Environments
+
+This framework provides automated testing of the fault-tolerant system by
+deliberately injecting faults and measuring recovery performance.
+"""
+
+import os
+import time
+import json
+import random
+import logging
+import argparse
+import subprocess
+import statistics
+import concurrent.futures
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import redis
+from enum import Enum
+from typing import Dict, List, Tuple, Any
+from dataclasses import dataclass
+
+# Import from our recovery orchestration module
+from recovery_orchestrator import FailureType, RecoveryAction
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("fault_testing.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger("FaultTesting")
+
+@dataclass
+class TestConfiguration:
+    """Configuration for a test run"""
+    test_name: str
+    target_nodes: List[str]
+    failure_types: List[FailureType]
+    iterations: int
+    concurrent_failures: int
+    failure_interval: float  # seconds
+    wait_for_recovery: bool
+    collect_metrics: bool
+    output_directory: str
+
+@dataclass
+class TestResult:
+    """Result of a test iteration"""
+    test_id: str
+    test_name: str
+    node_id: str
+    failure_type: FailureType
+    injection_time: float
+    detection_time: float
+    recovery_start_time: float
+    recovery_complete_time: float
+    success: bool
+    metrics_before: Dict[str, float]
+    metrics_after: Dict[str, float]
+    recovery_actions: List[str]
+
+class FaultInjector:
+    """
+    Injects various types of faults into the system to test fault tolerance
+    and recovery capabilities.
+    """
+    
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_password=None):
+        """Initialize the fault injector"""
+        self.redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password
+        )
+        logger.info("Fault Injector initialized")
+    
+    def inject_fault(self, node_id: str, failure_type: FailureType) -> float:
+        """
+        Inject a specific fault into the target node
+        Returns the timestamp when the fault was injected
+        """
+        injection_time = time.time()
+        
+        logger.info(f"Injecting {failure_type.value} fault into node {node_id}")
+        
+        # Implement different fault injection methods based on failure type
+        if failure_type == FailureType.PROCESS_CRASH:
+            self._inject_process_crash(node_id)
+        elif failure_type == FailureType.HIGH_CPU_USAGE:
+            self._inject_high_cpu_load(node_id)
+        elif failure_type == FailureType.MEMORY_LEAK:
+            self._inject_memory_leak(node_id)
+        elif failure_type == FailureType.DISK_SPACE:
+            self._inject_disk_space_issue(node_id)
+        elif failure_type == FailureType.NETWORK_ISSUE:
+            self._inject_network_issue(node_id)
+        elif failure_type == FailureType.SERVICE_UNRESPONSIVE:
+            self._inject_service_unresponsive(node_id)
+        elif failure_type == FailureType.DATABASE_CONNECTION:
+            self._inject_database_issue(node_id)
+        else:
+            # For hardware failures and unknown types, we'll simulate via the API
+            self._simulate_failure_event(node_id, failure_type)
+        
+        return injection_time
+    
+    def _inject_process_crash(self, node_id: str):
+        """Kill a critical process on the target node"""
+        # In a real test environment, this would SSH to the node and kill a process
+        # For simulation, we'll publish a synthetic failure event
+        self._simulate_failure_event(node_id, FailureType.PROCESS_CRASH)
+        
+    def _inject_high_cpu_load(self, node_id: str):
+        """Create high CPU load on the target node"""
+        # In a real test environment, this would SSH to the node and start CPU-intensive tasks
+        self._simulate_failure_event(node_id, FailureType.HIGH_CPU_USAGE)
+        
+    def _inject_memory_leak(self, node_id: str):
+        """Simulate a memory leak on the target node"""
+        # In a real test environment, this would deploy and start a memory-leaking program
+        self._simulate_failure_event(node_id, FailureType.MEMORY_LEAK)
+        
+    def _inject_disk_space_issue(self, node_id: str):
+        """Fill up disk space on the target node"""
+        # In a real test environment, this would SSH and create large files
+        self._simulate_failure_event(node_id, FailureType.DISK_SPACE)
+        
+    def _inject_network_issue(self, node_id: str):
+        """Create network connectivity issues on the target node"""
+        # In a real test environment, this would use iptables/tc to degrade network
+        self._simulate_failure_event(node_id, FailureType.NETWORK_ISSUE)
+        
+    def _inject_service_unresponsive(self, node_id: str):
+        """Make a critical service unresponsive on the target node"""
+        # In a real test environment, this would SSH and pause/block a service
+        self._simulate_failure_event(node_id, FailureType.SERVICE_UNRESPONSIVE)
+        
+    def _inject_database_issue(self, node_id: str):
+        """Create database connectivity issues for the target node"""
+        # In a real test environment, this might block database connections
+        self._simulate_failure_event(node_id, FailureType.DATABASE_CONNECTION)
+        
+    def _simulate_failure_event(self, node_id: str, failure_type: FailureType):
+        """
+        Publish a simulated failure event to the failure_events channel
+        This is used to simulate failures that are impractical to create in testing
+        """
+        # Create a failure event payload
+        affected_components = []
+        
+        if failure_type == FailureType.PROCESS_CRASH:
+            affected_components = ["compute_task"]
+        elif failure_type == FailureType.SERVICE_UNRESPONSIVE:
+            affected_components = ["web_server"]
+        elif failure_type == FailureType.DATABASE_CONNECTION:
+            affected_components = ["database"]
+        else:
+            affected_components = ["compute_task", "storage_service"]
+        
+        severity = 3  # Default severity
+        if failure_type == FailureType.HARDWARE_FAILURE:
+            severity = 5
+        elif failure_type in [FailureType.DATABASE_CONNECTION, FailureType.NETWORK_ISSUE]:
+            severity = 4
+        
+        event = {
+            "node_id": node_id,
+            "timestamp": time.time(),
+            "failure_type": failure_type.value,
+            "severity": severity,
+            "affected_components": affected_components,
+            "metrics": {
+                "cpu": random.uniform(80, 100) if failure_type == FailureType.HIGH_CPU_USAGE else random.uniform(20, 60),
+                "memory": random.uniform(80, 100) if failure_type == FailureType.MEMORY_LEAK else random.uniform(40, 70),
+                "disk": random.uniform(85, 99) if failure_type == FailureType.DISK_SPACE else random.uniform(50, 75),
+                "network": random.uniform(1, 10) if failure_type == FailureType.NETWORK_ISSUE else random.uniform(50, 100)
+            },
+            "error_message": f"Test-injected {failure_type.value} failure"
+        }
+        
+        # Publish to Redis
+        self.redis_client.publish("failure_events", json.dumps(event))
+        logger.info(f"Published simulated {failure_type.value} failure for node {node_id}")
+    
+    def cleanup(self):
+        """Clean up any resources or connections"""
+        self.redis_client.close()
+        logger.info("Fault Injector cleaned up")
+
+
+class MetricsCollector:
+    """Collects system metrics before, during, and after fault tests"""
+    
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_password=None):
+        """Initialize the metrics collector"""
+        self.redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password
+        )
+        logger.info("Metrics Collector initialized")
+    
+    def collect_node_metrics(self, node_id: str) -> Dict[str, float]:
+        """
+        Collect current metrics for a node
+        Returns a dictionary of metrics
+        """
+        # In a real system, this would query the node directly
+        # For simulation, we'll generate synthetic metrics
+        
+        metrics = {
+            "cpu_usage": random.uniform(5, 95),
+            "memory_usage": random.uniform(20, 80),
+            "disk_usage": random.uniform(30, 90),
+            "network_throughput": random.uniform(10, 1000),
+            "active_processes": random.randint(50, 200),
+            "open_file_descriptors": random.randint(1000, 5000),
+            "system_load_1m": random.uniform(0.1, 8.0),
+            "response_time_ms": random.uniform(5, 500)
+        }
+        
+        logger.debug(f"Collected metrics for node {node_id}")
+        return metrics
+    
+    def cleanup(self):
+        """Clean up any resources or connections"""
+        self.redis_client.close()
+        logger.info("Metrics Collector cleaned up")
+
+
+class RecoveryMonitor:
+    """Monitors and records recovery events and timing"""
+    
+    def __init__(self, redis_host='localhost', redis_port=6379, redis_password=None):
+        """Initialize the recovery monitor"""
+        self.redis_client = redis.Redis(
+            host=redis_host,
+            port=redis_port,
+            password=redis_password
+        )
+        self.pubsub = self.redis_client.pubsub(ignore_subscribe_messages=True)
+        self.pubsub.subscribe("recovery_events")
+        
+        # Track active recoveries
+        self.active_recoveries = {}
+        self.completed_recoveries = []
+        
+        logger.info("Recovery Monitor initialized")
+    
+    def wait_for_recovery(self, node_id: str, timeout: float = 120.0) -> Tuple[bool, float, List[str]]:
+        """
+        Wait for a recovery operation to complete for a specific node
+        Returns (success, completion_time, recovery_actions)
+        """
+        start_time = time.time()
+        recovery_plan_id = None
+        recovery_actions = []
+        
+        # Poll for recovery events
+        while time.time() - start_time < timeout:
+            # Check if we have the recovery plan ID yet
+            if recovery_plan_id is None:
+                # Query for active recoveries for this node
+                recovery_info = self._get_node_recovery_info(node_id)
+                if recovery_info and "plan_id" in recovery_info:
+                    recovery_plan_id = recovery_info["plan_id"]
+                    logger.info(f"Found recovery plan {recovery_plan_id} for node {node_id}")
+            
+            # If we have a recovery plan ID, check its status
+            if recovery_plan_id:
+                status = self._get_recovery_status(recovery_plan_id)
+                if status:
+                    if status["status"] in ["completed", "failed"]:
+                        logger.info(f"Recovery for node {node_id} {status['status']}")
+                        
+                        # Extract recovery actions
+                        if "completed_actions" in status:
+                            recovery_actions = [action["action"] for action in status["completed_actions"]]
+                        
+                        # Return result
+                        completion_time = time.time()
+                        return (status["status"] == "completed", completion_time, recovery_actions)
+            
+            # Wait before checking again
+            time.sleep(1.0)
+        
+        # Timeout reached
+        logger.warning(f"Timeout waiting for recovery of node {node_id}")
+        return (False, time.time(), recovery_actions)
+    
+    def _get_node_recovery_info(self, node_id: str) -> Dict:
+        """
+        Get recovery information for a specific node
+        This would query the recovery orchestrator in a real system
+        """
+        # Simulate recovery orchestrator query
+        # In a real implementation, this would use gRPC or REST API
+        
+        # Check if there's a active recovery for this node in our cache
+        for plan_id, info in self.active_recoveries.items():
+            if info.get("node_id") == node_id:
+                return {"plan_id": plan_id, "status": info.get("status", "unknown")}
+        
+        # If not in cache, simulate querying the orchestrator
+        # For simulation, we'll assume recovery was started 1-3 seconds ago
+        plan_id = f"recovery-{node_id}-{int(time.time() - random.uniform(1, 3))}"
+        
+        # Cache the plan ID
+        self.active_recoveries[plan_id] = {
+            "node_id": node_id,
+            "status": "in_progress",
+            "start_time": time.time() - random.uniform(1, 3)
+        }
+        
+        return {"plan_id": plan_id, "status": "in_progress"}
+    
+    def _get_recovery_status(self, plan_id: str) -> Dict:
+        """
+        Get the current status of a recovery plan
+        This would query the recovery orchestrator in a real system
+        """
+        # Check if in our cache
+        if plan_id in self.active_recoveries:
+            # Simulate recovery progress
+            info = self.active_recoveries[plan_id]
+            elapsed = time.time() - info.get("start_time", time.time())
+            
+            # For simulation, assume recoveries take 5-15 seconds
+            if elapsed > random.uniform(5, 15):
+                # Mark as completed (90% success rate)
+                success = random.random() < 0.9
+                status = "completed" if success else "failed"
+                
+                # Generate some completed actions
+                actions = []
+                for i in range(random.randint(1, 4)):
+                    action_type = random.choice(list(RecoveryAction))
+                    actions.append({
+                        "action": action_type.value,
+                        "params": {},
+                        "success": True,
+                        "timestamp": time.time() - random.uniform(1, 5)
+                    })
+                
+                # Update cache and move to completed
+                info["status"] = status
+                info["completed_actions"] = actions
+                info["end_time"] = time.time()
+                
+                # Move to completed
+                self.completed_recoveries.append(info)
+                del self.active_recoveries[plan_id]
+                
+                return info
+            
+            return info
+        
+        # Check if in completed recoveries
+        for info in self.completed_recoveries:
+            if info.get("plan_id") == plan_id:
+                return info
+        
+        # Not found
+        return None
+    
+    def cleanup(self):
+        """Clean up any resources or connections"""
+        self.pubsub.unsubscribe()
+        self.redis_client.close()
+        logger.info("Recovery Monitor cleaned up")
+
+
+class TestRunner:
+    """Runs fault injection tests and collects results"""
+    
+    def __init__(self, config: TestConfiguration):
+        """Initialize the test runner with configuration"""
+        self.config = config
+        
+        # Create output directory if it doesn't exist
+        os.makedirs(config.output_directory, exist_ok=True)
+        
+        # Initialize components
+        self.injector = FaultInjector()
+        self.monitor = RecoveryMonitor()
+        self.metrics = MetricsCollector() if config.collect_metrics else None
+        
+        self.results = []
+        logger.info(f"Test Runner initialized for test '{config.test_name}'")
+    
+    def run(self) -> List[TestResult]:
+        """Run the complete test suite and return results"""
+        logger.info(f"Starting test '{self.config.test_name}' with {self.config.iterations} iterations")
+        
+        # Run iterations
+        for i in range(self.config.iterations):
+            logger.info(f"Starting iteration {i+1}/{self.config.iterations}")
+            
+            # Run single or concurrent failures
+            if self.config.concurrent_failures > 1:
+                # Run concurrent failures
+                self._run_concurrent_failures(i)
+            else:
+                # Run single failures sequentially
+                for failure_type in self.config.failure_types:
+                    for node_id in self.config.target_nodes:
+                        result = self._run_single_test(i, node_id, failure_type)
+                        self.results.append(result)
+                        
+                        # Wait between tests if specified
+                        if self.config.failure_interval > 0:
+                            time.sleep(self.config.failure_interval)
+        
+        # Generate summary report
+        self._generate_report()
+        
+        # Clean up
+        self.cleanup()
+        
+        return self.results
+    
+    def _run_single_test(self, iteration: int, node_id: str, failure_type: FailureType) -> TestResult:
+        """Run a single test iteration and return the result"""
+        test_id = f"{self.config.test_name}-{iteration}-{node_id}-{failure_type.value}"
+        logger.info(f"Running test {test_id}")
+        
+        # Collect pre-failure metrics if enabled
+        metrics_before = {}
+        if self.config.collect_metrics:
+            metrics_before = self.metrics.collect_node_metrics(node_id)
+        
+        # Inject fault and record time
+        injection_time = self.injector.inject_fault(node_id, failure_type)
+        
+        # Wait for recovery detection and completion if enabled
+        success = False
+        recovery_actions = []
+        detection_time = injection_time + random.uniform(0.5, 2.0)  # Simulate detection latency
+        recovery_start_time = detection_time + random.uniform(0.2, 1.0)  # Simulate orchestration latency
+        recovery_complete_time = recovery_start_time + random.uniform(3.0, 10.0)  # Simulate recovery time
+        
+        if self.config.wait_for_recovery:
+            # Wait for recovery completion
+            success, recovery_complete_time, recovery_actions = self.monitor.wait_for_recovery(
+                node_id, timeout=120.0
+            )
+        
+        # Collect post-recovery metrics if enabled
+        metrics_after = {}
+        if self.config.collect_metrics:
+            # Wait a moment for system to stabilize
+            time.sleep(1.0)
+            metrics_after = self.metrics.collect_node_metrics(node_id)
+        
+        # Create and return test result
+        result = TestResult(
+            test_id=test_id,
+            test_name=self.config.test_name,
+            node_id=node_id,
+            failure_type=failure_type,
+            injection_time=injection_time,
+            detection_time=detection_time,
+            recovery_start_time=recovery_start_time,
+            recovery_complete_time=recovery_complete_time,
+            success=success,
+            metrics_before=metrics_before,
+            metrics_after=metrics_after,
+            recovery_actions=recovery_actions
+        )
+        
+        logger.info(f"Test {test_id} completed with success={success}")
+        return result
+    
+    def _run_concurrent_failures(self, iteration: int):
+        """Run multiple failures concurrently"""
+        logger.info(f"Running {self.config.concurrent_failures} concurrent failures")
+        
+        # Select random nodes and failure types
+        test_cases = []
+        for _ in range(self.config.concurrent_failures):
+            node_id = random.choice(self.config.target_nodes)
+            failure_type = random.choice(self.config.failure_types)
+            test_cases.append((node_id, failure_type))
+        
+        # Run tests concurrently
+        with concurrent.futures.ThreadPoolExecutor(max_workers=self.config.concurrent_failures) as executor:
+            futures = []
+            for node_id, failure_type in test_cases:
+                future = executor.submit(
+                    self._run_single_test, iteration, node_id, failure_type
+                )
+                futures.append(future)
+            
+            # Collect results
+            for future in concurrent.futures.as_completed(futures):
+                result = future.result()
+                self.results.append(result)
+    
+    def _generate_report(self):
+        """Generate a summary report of test results"""
+        if not self.results:
+            logger.warning("No test results to generate report")
+            return
+        
+        # Calculate statistics
+        total_tests = len(self.results)
+        successful_recoveries = sum(1 for r in self.results if r.success)
+        success_rate = successful_recoveries / total_tests if total_tests > 0 else 0
+        
+        # Calculate timing statistics
+        detection_times = [(r.detection_time - r.injection_time) for r in self.results]
+        orchestration_times = [(r.recovery_start_time - r.detection_time) for r in self.results]
+        recovery_times = [(r.recovery_complete_time - r.recovery_start_time) for r in self.results]
+        total_recovery_times = [(r.recovery_complete_time - r.injection_time) for r in self.results]
+        
+        # Create summary data
+        summary = {
+            "test_name": self.config.test_name,
+            "total_tests": total_tests,
+            "successful_recoveries": successful_recoveries,
+            "success_rate": success_rate,
+            "avg_detection_time": statistics.mean(detection_times) if detection_times else 0,
+            "avg_orchestration_time": statistics.mean(orchestration_times) if orchestration_times else 0,
+            "avg_recovery_time": statistics.mean(recovery_times) if recovery_times else 0,
+            "avg_total_time": statistics.mean(total_recovery_times) if total_recovery_times else 0,
+            "max_recovery_time": max(recovery_times) if recovery_times else 0,
+            "min_recovery_time": min(recovery_times) if recovery_times else 0,
+        }
+        
+        # Write summary to JSON file
+        summary_path = os.path.join(self.config.output_directory, f"{self.config.test_name}_summary.json")
+        with open(summary_path, 'w') as f:
+            json.dump(summary, f, indent=2)
+        
+        # Write detailed results to CSV
+        results_path = os.path.join(self.config.output_directory, f"{self.config.test_name}_results.csv")
+        with open(results_path, 'w') as f:
+            f.write("test_id,node_id,failure_type,injection_time,detection_time,recovery_start_time,recovery_complete_time,success,detection_latency,orchestration_latency,recovery_time,total_time\n")
+            for r in self.results:
+                detection_latency = r.detection_time - r.injection_time
+                orchestration_latency = r.recovery_start_time - r.detection_time
+                recovery_time = r.recovery_complete_time - r.recovery_start_time
+                total_time = r.recovery_complete_time - r.injection_time
+                
+                f.write(f"{r.test_id},{r.node_id},{r.failure_type.value},{r.injection_time},{r.detection_time},{r.recovery_start_time},{r.recovery_complete_time},{r.success},{detection_latency},{orchestration_latency},{recovery_time},{total_time}\n")
+        
+        # Generate visualization
+        self._generate_visualizations()
+        
+        logger.info(f"Test report generated in {self.config.output_directory}")
+        logger.info(f"Success rate: {success_rate:.2%}")
+        logger.info(f"Average detection time: {summary['avg_detection_time']:.3f}s")
+        logger.info(f"Average recovery time: {summary['avg_recovery_time']:.3f}s")
+        logger.info(f"Average total time: {summary['avg_total_time']:.3f}s")
+    
+    def _generate_visualizations(self):
+        """Generate visualizations of test results"""
+        if not self.results:
+            return
+        
+        # Create dataframe from results
+        data = []
+        for r in self.results:
+            data.append({
+                "test_id": r.test_id,
+                "node_id": r.node_id,
+                "failure_type": r.failure_type.value,
+                "success": r.success,
+                "detection_time": r.detection_time - r.injection_time,
+                "orchestration_time": r.recovery_start_time - r.detection_time,
+                "recovery_time": r.recovery_complete_time - r.recovery_start_time,
+                "total_time": r.recovery_

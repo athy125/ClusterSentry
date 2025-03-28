@@ -417,4 +417,137 @@ class RecoveryOrchestrator:
         
         elif action == RecoveryAction.RESTART_SERVICE:
             service_name = params.get("service_name", "unknown")
-            logger.info(f"Restar
+            logger.info(f"Restarting service {service_name} on node {node_id}")
+            # In a real system, would use systemctl or equivalent
+            return True
+        
+        elif action == RecoveryAction.REBOOT_NODE:
+            logger.info(f"Rebooting node {node_id}")
+            # In a real system, would use SSH or agent RPC to reboot
+            timeout = params.get("timeout", 300)
+            # Simulate waiting for node to come back online
+            time.sleep(5.0)
+            return True
+        
+        elif action == RecoveryAction.MIGRATE_WORKLOAD:
+            source_node = params.get("source_node")
+            workload_type = params.get("workload_type", "all")
+            logger.info(f"Migrating {workload_type} workloads from node {source_node}")
+            # In a real system, would coordinate with scheduler to migrate tasks
+            return True
+        
+        elif action == RecoveryAction.CLEAR_CACHE:
+            logger.info(f"Clearing caches on node {node_id}")
+            # In a real system, would clear OS and application caches
+            return True
+        
+        elif action == RecoveryAction.CLEANUP_DISK:
+            min_free = params.get("min_free_percent", 10)
+            logger.info(f"Cleaning up disk space on node {node_id} to ensure {min_free}% free")
+            # In a real system, would remove temporary files, logs, etc.
+            return True
+        
+        elif action == RecoveryAction.RESET_NETWORK:
+            logger.info(f"Resetting network interfaces on node {node_id}")
+            # In a real system, would restart network interfaces or services
+            return True
+        
+        elif action == RecoveryAction.FAILOVER_DATABASE:
+            logger.info(f"Initiating database failover for node {node_id}")
+            # In a real system, would trigger database failover mechanism
+            return True
+        
+        elif action == RecoveryAction.MANUAL_INTERVENTION:
+            message = params.get("message", "Manual intervention required")
+            logger.warning(f"MANUAL INTERVENTION REQUIRED: {message}")
+            # In a real system, would send alerts via email, SMS, etc.
+            # This action always "succeeds" as it's just a notification
+            return True
+        
+        else:
+            logger.error(f"Unknown recovery action: {action}")
+            return False
+
+def simulate_failure(redis_client, node_id, failure_type, severity=3):
+    """Helper function to simulate a failure for testing"""
+    event = {
+        "node_id": node_id,
+        "timestamp": time.time(),
+        "failure_type": failure_type.value,
+        "severity": severity,
+        "affected_components": ["compute_task", "storage_service"],
+        "metrics": {
+            "cpu": 95.0,
+            "memory": 87.3,
+            "disk": 92.1
+        },
+        "error_message": f"Simulated {failure_type.value} failure"
+    }
+    
+    redis_client.publish("failure_events", json.dumps(event))
+    logger.info(f"Simulated {failure_type.value} failure published for node {node_id}")
+
+def main():
+    """Main entry point for the recovery orchestrator"""
+    parser = argparse.ArgumentParser(description="Recovery Orchestrator for Fault-Tolerant HPC System")
+    parser.add_argument("--config", default="recovery_config.json", help="Path to configuration file")
+    parser.add_argument("--simulate", action="store_true", help="Simulate failures for testing")
+    args = parser.parse_args()
+    
+    # Create default config if not exists
+    if not os.path.exists(args.config):
+        default_config = {
+            "redis_host": "localhost",
+            "redis_port": 6379,
+            "redis_password": None,
+            "num_worker_threads": 4,
+            "log_level": "INFO"
+        }
+        with open(args.config, 'w') as f:
+            json.dump(default_config, f, indent=2)
+        logger.info(f"Created default configuration file at {args.config}")
+    
+    # Initialize orchestrator
+    orchestrator = RecoveryOrchestrator(args.config)
+    
+    try:
+        if args.simulate:
+            # Set up Redis client for simulation
+            redis_client = redis.Redis(
+                host=orchestrator.config.get('redis_host', 'localhost'),
+                port=orchestrator.config.get('redis_port', 6379),
+                password=orchestrator.config.get('redis_password', None)
+            )
+            
+            # Simulate different types of failures
+            logger.info("Starting failure simulation...")
+            time.sleep(2)
+            
+            simulate_failure(redis_client, "node-1", FailureType.PROCESS_CRASH)
+            time.sleep(5)
+            
+            simulate_failure(redis_client, "node-2", FailureType.HIGH_CPU_USAGE)
+            time.sleep(5)
+            
+            simulate_failure(redis_client, "node-3", FailureType.DISK_SPACE)
+            time.sleep(5)
+            
+            simulate_failure(redis_client, "node-4", FailureType.HARDWARE_FAILURE, severity=5)
+            time.sleep(10)
+            
+            logger.info("Simulation complete")
+        else:
+            # In normal operation, just wait for events
+            logger.info("Recovery Orchestrator running. Press Ctrl+C to exit.")
+            while True:
+                time.sleep(1)
+    
+    except KeyboardInterrupt:
+        logger.info("Keyboard interrupt received")
+    
+    finally:
+        # Shutdown orchestrator
+        orchestrator.shutdown()
+
+if __name__ == "__main__":
+    main()
